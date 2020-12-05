@@ -1,0 +1,18 @@
+import os
+import shutil
+
+# 想要移动文件所在的根目录
+# 用于移动指定数量图片到目标位置
+rootdir = r"E:\Kaggle DogsVSCats\valid\dog"
+count = 0
+for item in os.listdir(rootdir):
+    full_path = os.path.join(rootdir, item)
+    des_path = r'E:\Kaggle DogsVSCats\valid_1\dog'  # 目标位置
+    shutil.copy(full_path, des_path)
+    count += 1
+    if count == 20:  # 图片数量
+        break
+ 
+ # 此项目需要设置两个文件夹:train 和  valid 
+ # train、valid下分别设置cat dog文件夹，将官网下载的数据集中的train数据集分猫狗放到两个文件夹中。
+ # train与valid中图片数量自定，建议2：1~4：1之间
