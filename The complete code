@@ -1,0 +1,159 @@
+# coding = utf-8
+import os
+import numpy as np
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import torch.optim as optim
+from torch.autograd import Variable
+from torch.utils.data import Dataset
+from torchvision import transforms, datasets, models
+import shutil  # 用于处理原始数据集分割；此处可省略
+from matplotlib import pyplot as plt
+
+# 设置随机数种子，使得每次生成相同随机数，方便代码调试。
+# 但此处电脑PyTorch版本貌似不支持 torch.cuda.manual.seed()命令，故注释掉。
+#random_state = 42
+#np.random.seed(random_state)
+
+# 数据集分划部分此处省略
+
+# random_state = 1
+# torch.manual_seed(random_state)
+# torch.cuda.manual_seed(random_state)
+# torch.cuda.manual.seed_all(random_state)
+# np.random.seed(random_state)
+
+# 参数配置；也可用字典形式定义
+epochs = 10
+batch_size = 4
+num_workers = 0  # 多线程数目配置
+use_gpu = torch.cuda.is_available()  # 判断GPU是否可用
+path = r'E:\\Kaggle DogsVSCats\prac\model.pt'  # 模型地址
+
+data_transform = transforms.Compose([transforms.Resize(256),
+                                     transforms.CenterCrop(224),
+                                     transforms.ToTensor(),
+                                     transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                                                          std=[0.229, 0.224, 0.225])])  # 对数据集的图像进行处理为224*224*3的大小，拉成向量后归一化处理。
+train_dataset = datasets.ImageFolder(root=r'E:\Kaggle DogsVSCats\train_1', transform=data_transform)  # 图像加载
+# print(train_dataset)
+train_loader = torch.utils.data.DataLoader(train_dataset,
+                                           batch_size=batch_size,
+                                           shuffle=True,
+                                           num_workers=num_workers)  # 图像按设定好的批次加载，打乱顺序
+
+test_dataset = datasets.ImageFolder(root=r'E:\Kaggle DogsVSCats\valid_1', transform=data_transform)
+test_loader = torch.utils.data.DataLoader(test_dataset,
+                                          batch_size=batch_size,
+                                          shuffle=True,
+                                          num_workers=num_workers)
+
+# 模型定义
+# 此网络较为简单，卷积-池化-卷积-全连接*3
+# 再全连接时也可以加入nn.Dropout(p=0.5)来随机丢掉一些神经元，以此来增加模型泛化能力
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=6, kernel_size=5, stride=1, padding=0)
+        self.maxpool = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.conv2 = nn.Conv2d(in_channels=6, out_channels=16, kernel_size=5, stride=1, padding=0)
+        self.fc1 = nn.Linear(16*53*53, 1024)
+        self.fc2 = nn.Linear(1024, 512)
+        self.fc3 = nn.Linear(512, 2)
+
+    def forward(self, x):
+        x = self.maxpool(F.relu(self.conv1(x)))
+        x = self.maxpool(F.relu(self.conv2(x)))
+        x = x.view(-1, 16*53*53)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+
+        return x
+
+
+net = Net()
+if(os.path.exists(r'E:\Kaggle DogsVSCats\prac\model.pt')):
+    net = torch.load(r'E:\Kaggle DogsVSCats\prac\model.pt')  # 如果模型已经存在，则直接加载模型
+if use_gpu:
+    print('gpu is available')
+    net = net.cuda()  # 设置GPU来跑代码
+else:
+    print('gpu is not available')
+
+print(net)
+trainLoss = []
+trainacc = []
+testLoss = []
+testacc = [] # 此处用列表形式，方便后续操作(画图)
+x = np.arange(1, epochs+1)  # 后续画图时横轴向量
+
+cirterion = nn.CrossEntropyLoss()  # 损失函数定义 二元交叉熵损失函数
+optimizer = optim.SGD(net.parameters(), lr=0.01, momentum=0.9)  # 优化使用SGD方法
+
+def train():
+    for epoch in range(epochs):
+        running_loss = 0.0
+        train_correct = 0
+        train_total = 0
+        for step, data in enumerate(train_loader, 0):  # 这个循环语句enumerate一直没搞懂...
+            inputs, train_labels = data
+            if use_gpu:
+                inputs, train_labels = Variable(inputs.cuda()), Variable(train_labels.cuda())  # 将数据变为Tensor，为后续做准备
+            else:
+                inputs, train_labels = Variable(inputs), Variable(train_labels)
+            optimizer.zero_grad()
+            outputs = net(inputs)
+            _, train_predicteds = torch.max(outputs.data, 1)  # _,train_pred 中的_相当于占位符，并没有什么实际含义
+            train_correct += (train_predicteds == train_labels.data).sum()
+            loss = cirterion(outputs, train_labels)
+            loss.backward()
+            optimizer.step()
+            running_loss += loss.item()
+            train_total += train_labels.size(0)
+
+        print('train {:d} epoch loss: {:.3f} acc: {:.3f}'.format(
+              epoch+1, running_loss/train_total, 100*train_correct/train_total))
+
+        correct = 0  # 开始模型测试
+        test_loss = 0.0
+        test_total = 0
+        net.eval()  # 模型参数不在变化
+        for data in test_loader:
+            images, labels = data
+            if use_gpu:
+                images, labels = Variable(images.cuda()), Variable(labels.cuda())
+            else:
+                images, labels = Variable(images), Variable(labels)
+            outputs = net(images)
+            _, predicted = torch.max(outputs.data, 1)
+            loss = cirterion(outputs, labels)
+            test_loss += loss.item()
+            test_total += labels.size(0)
+            correct += (predicted==labels).sum()
+
+        print('test %d epoch loss %.3f acc: %.3f' %
+              (epoch+1, test_loss/test_total, 100*correct/test_total))
+        trainLoss.append(running_loss/train_total)
+        trainacc.append(100*train_correct/train_total)
+        testLoss.append(test_loss/test_total)
+        testacc.append(100*correct/test_total)
+    plt.figure(1)
+    plt.title('train')
+    plt.plot(x, trainacc, 'r')
+    plt.plot(x, trainLoss, 'b')
+    plt.show()
+    plt.figure(2)
+    plt.title('test')
+    plt.plot(x, testacc, 'r')
+    plt.plot(x, testLoss, 'b')
+    plt.show()
+
+    torch.save(net, r'E:\Kaggle DogsVSCats\prac\models.pt')  # 保存模型
+
+train()
+
+
+
+
